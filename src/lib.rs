@@ -1,6 +1,6 @@
 use crate::fetch_decode::Opcode;
 use fetch_decode::{AddrMode, decode};
-use log::trace;
+use log::{trace, warn};
 
 bitflags::bitflags! {
     pub struct Flags: u8 {
@@ -22,24 +22,64 @@ impl Default for Flags {
     }
 }
 
-pub struct Memory {
-    memory: [u8; 0xffff],
+const CPU_RAM_START: u16 = 0x0000;
+const CPU_RAM_MIRROR_END: u16 = 0x1FFF;
+const PPU_REGISTERS_START: u16 = 0x2000;
+const PPU_REGISTERS_END: u16 = 0x3FFF;
+
+pub struct Bus {
+    cpu_ram: [u8; 0x800],
+    pc_start_mem: [u8; 2],
 }
 
-impl Default for Memory {
+impl Default for Bus {
     fn default() -> Self {
-        Memory {
-            memory: [0; 0xffff],
+        Bus {
+            cpu_ram: [0; 0x800],
+            pc_start_mem: [0; 2],
         }
     }
 }
 
-impl Memory {
+impl Bus {
     pub fn read(&self, pos: u16) -> u8 {
-        self.memory[pos as usize]
+        match pos {
+            CPU_RAM_START..=CPU_RAM_MIRROR_END => {
+                let masked = pos & 0x07ff;
+                self.cpu_ram[masked as usize]
+            }
+            PPU_REGISTERS_START..=PPU_REGISTERS_END => {
+                let _masked = pos & 0x2007;
+                todo!("PPU")
+            }
+            0xfffc..=0xfffd => {
+                let masked = pos & 0x1;
+                self.pc_start_mem[masked as usize]
+            }
+            _ => {
+                warn!("Unknown memory address 0x{pos:04X} accessed, ignoring...");
+                0
+            }
+        }
     }
     pub fn write(&mut self, pos: u16, val: u8) {
-        self.memory[pos as usize] = val;
+        match pos {
+            CPU_RAM_START..=CPU_RAM_MIRROR_END => {
+                let masked = pos & 0x07ff;
+                self.cpu_ram[masked as usize] = val;
+            }
+            PPU_REGISTERS_START..=PPU_REGISTERS_END => {
+                let _masked = pos & 0x2007;
+                todo!("PPU")
+            }
+            0xfffc..=0xfffd => {
+                let masked = pos & 0x1;
+                self.pc_start_mem[masked as usize] = val;
+            }
+            _ => {
+                warn!("Unknown memory address 0x{pos:04X} accessed, ignoring...");
+            }
+        }
     }
     pub fn read_u16(&self, pos: u16) -> u16 {
         // dbg!(pos);
@@ -56,11 +96,12 @@ impl Memory {
         self.write(pos + 1, high);
     }
     pub fn load_prg_rom(&mut self, slice: &[u8]) {
-        self.memory[0x8000..(0x8000 + slice.len())].copy_from_slice(slice)
+        todo!()
+        // self.cpu_ram[0x8000..(0x8000 + slice.len())].copy_from_slice(slice)
     }
     pub fn load_to(&mut self, pos: u16, slice: &[u8]) {
         let pos = pos as usize;
-        self.memory[pos..(pos + slice.len())].copy_from_slice(slice)
+        self.cpu_ram[pos..(pos + slice.len())].copy_from_slice(slice)
     }
 }
 
@@ -72,7 +113,7 @@ pub struct Cpu {
     pub stack_ptr: u8,
     pub pc: u16,
     pub status: Flags,
-    pub memory: Memory,
+    pub memory: Bus,
 }
 
 const STACK_RESET: u8 = 0xfd;
