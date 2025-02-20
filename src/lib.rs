@@ -481,7 +481,7 @@ impl Cpu {
             (Opcode::SBC, addr_mode) => {
                 let addr = self.get_addr_mode_dest(addr_mode);
                 let val = self.memory.read(addr);
-                self.add_a((!val));
+                self.add_a(!val);
             }
             (Opcode::SEC, _addr_mode) => self.status.insert(Flags::CARRY),
             (Opcode::SED, _addr_mode) => self.status.insert(Flags::DECIMAL),

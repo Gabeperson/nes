@@ -1,114 +1,171 @@
+use std::num::NonZeroU32;
+
+use log::Level;
 use nes::*;
+use winit::{
+    dpi::{LogicalSize, Size},
+    event::{Event, KeyEvent, WindowEvent},
+    event_loop::{ControlFlow, EventLoop},
+    keyboard::{Key, KeyCode, NamedKey, PhysicalKey},
+};
 
-use sdl2::event::Event;
-use sdl2::keyboard::Keycode;
-use sdl2::pixels::Color;
-use sdl2::pixels::PixelFormatEnum;
-use sdl2::EventPump;
+mod winit_app;
 fn main() {
-    simple_logger::init().unwrap();
-    let sdl_context = sdl2::init().unwrap();
-    let video_subsystem = sdl_context.video().unwrap();
-    let window = video_subsystem
-        .window("Snake game", (32.0 * 10.0) as u32, (32.0 * 10.0) as u32)
-        .position_centered()
-        .build()
-        .unwrap();
-    let mut canvas = window.into_canvas().present_vsync().build().unwrap();
-    let mut event_pump = sdl_context.event_pump().unwrap();
-    canvas.set_scale(10.0, 10.0).unwrap();
+    simple_logger::init_with_level(Level::Debug).unwrap();
+    let event_loop = EventLoop::new().unwrap();
 
-    let creator = canvas.texture_creator();
-    let mut texture = creator
-        .create_texture_target(PixelFormatEnum::RGB24, 32, 32)
-        .unwrap();
+    let app = winit_app::WinitAppBuilder::with_init(
+        |elwt| {
+            let window = winit_app::make_window(elwt, |w| {
+                w.with_inner_size(Size::Logical(LogicalSize::new(320., 320.)))
+            });
+            let context = softbuffer::Context::new(window.clone()).unwrap();
+            let mut cpu = Cpu::new();
+            cpu.load_to(0x600, GAME_CODE);
+            cpu.memory.write_u16(0xFFFC, 0x600);
+            cpu.reset();
+            let doublebuffer = [0u32; 1024];
+            (window, context, cpu, doublebuffer)
+        },
+        |_elwt, (window, context, _cpu, _doublebuffer)| {
+            softbuffer::Surface::new(context, window.clone()).unwrap()
+        },
+    )
+    .with_event_handler(
+        |(window, _context, cpu, doublebuffer), surface, event, elwt| {
+            elwt.set_control_flow(ControlFlow::Poll);
+            window.request_redraw();
 
-    let mut cpu = Cpu::new();
-    cpu.load_to(0x600, GAME_CODE);
-    cpu.memory.write_u16(0xFFFC, 0x600);
-    cpu.reset();
+            let surface = surface.unwrap();
 
-    let mut screen_state = [0; 32 * 3 * 32];
+            match event {
+                Event::WindowEvent {
+                    window_id: _winid,
+                    event: WindowEvent::RedrawRequested,
+                } => {
+                    cpu.memory.write(0xfe, fastrand::u8(1..16));
 
-    cpu.run_with_callback(move |cpu| {
-        handle_user_input(cpu, &mut event_pump);
+                    let size = window.inner_size();
+                    if let (Some(_width), Some(_height)) =
+                        (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
+                    {
+                        let mut buffer = surface.buffer_mut().unwrap();
 
-        cpu.memory.write(0xfe, fastrand::u8(1..16));
+                        if buffer.len() < 1024 * 100 {
+                            return;
+                        }
 
-        if read_screen_state(cpu, &mut screen_state) {
-            texture.update(None, &screen_state, 32 * 3).unwrap();
-            canvas.copy(&texture, None, None).unwrap();
-            canvas.present();
-        }
+                        loop {
+                            if cpu.status.contains(Flags::BREAK) {
+                                std::process::exit(0);
+                            }
+                            cpu.step();
 
-        ::std::thread::sleep(std::time::Duration::new(0, 70_000));
-    });
+                            if read_screen_state(cpu, doublebuffer) {
+                                for (i, dblbfr) in doublebuffer.iter().take(0x400).enumerate() {
+                                    let y = i / 32;
+                                    let x = i % 32;
+                                    for dx in 0..10 {
+                                        for dy in 0..10 {
+                                            let coord = (y * 10 + dy) * (32 * 10) + (x * 10 + dx);
+
+                                            buffer[coord] = *dblbfr;
+                                        }
+                                    }
+                                }
+                                // dbg!(doublebuffer);
+                                buffer.present().unwrap();
+                                break;
+                            }
+                            ::std::thread::sleep(std::time::Duration::new(0, 70_000));
+                        }
+                    }
+                }
+                Event::WindowEvent {
+                    window_id,
+                    event: WindowEvent::Resized(size),
+                } if window_id == window.id() => {
+                    if let (Some(width), Some(height)) =
+                        (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
+                    {
+                        surface.resize(width, height).unwrap();
+                    }
+                }
+                Event::WindowEvent {
+                    event:
+                        WindowEvent::CloseRequested
+                        | WindowEvent::KeyboardInput {
+                            event:
+                                KeyEvent {
+                                    logical_key: Key::Named(NamedKey::Escape),
+                                    ..
+                                },
+                            ..
+                        },
+                    window_id,
+                } if window_id == window.id() => {
+                    elwt.exit();
+                }
+                Event::WindowEvent {
+                    event:
+                        WindowEvent::KeyboardInput {
+                            device_id: _devid,
+                            event:
+                                KeyEvent {
+                                    physical_key:
+                                        PhysicalKey::Code(
+                                            key @ (KeyCode::KeyW
+                                            | KeyCode::KeyA
+                                            | KeyCode::KeyS
+                                            | KeyCode::KeyD),
+                                        ),
+                                    ..
+                                },
+                            is_synthetic: _issynth,
+                        },
+                    ..
+                } => {
+                    let val = match key {
+                        KeyCode::KeyW => 0x77,
+                        KeyCode::KeyS => 0x73,
+                        KeyCode::KeyA => 0x61,
+                        KeyCode::KeyD => 0x64,
+                        _ => unreachable!(),
+                    };
+                    cpu.memory.write(0xff, val);
+                }
+                _ => {}
+            }
+        },
+    );
+
+    winit_app::run_app(event_loop, app);
 }
 
-fn handle_user_input(cpu: &mut Cpu, event_pump: &mut EventPump) {
-    for event in event_pump.poll_iter() {
-        match event {
-            Event::Quit { .. }
-            | Event::KeyDown {
-                keycode: Some(Keycode::Escape),
-                ..
-            } => std::process::exit(0),
-            Event::KeyDown {
-                keycode: Some(Keycode::W),
-                ..
-            } => {
-                cpu.memory.write(0xff, 0x77);
-            }
-            Event::KeyDown {
-                keycode: Some(Keycode::S),
-                ..
-            } => {
-                cpu.memory.write(0xff, 0x73);
-            }
-            Event::KeyDown {
-                keycode: Some(Keycode::A),
-                ..
-            } => {
-                cpu.memory.write(0xff, 0x61);
-            }
-            Event::KeyDown {
-                keycode: Some(Keycode::D),
-                ..
-            } => {
-                cpu.memory.write(0xff, 0x64);
-            }
-            _ => { /* do nothing */ }
-        }
-    }
-}
-
-fn color(byte: u8) -> Color {
+fn color(byte: u8) -> u32 {
     match byte {
-        0 => sdl2::pixels::Color::BLACK,
-        1 => sdl2::pixels::Color::WHITE,
-        2 | 9 => sdl2::pixels::Color::GREY,
-        3 | 10 => sdl2::pixels::Color::RED,
-        4 | 11 => sdl2::pixels::Color::GREEN,
-        5 | 12 => sdl2::pixels::Color::BLUE,
-        6 | 13 => sdl2::pixels::Color::MAGENTA,
-        7 | 14 => sdl2::pixels::Color::YELLOW,
-        _ => sdl2::pixels::Color::CYAN,
+        0 => 0x000000,
+        1 => 0xFFFFFF,
+        2 | 9 => 0xAAAAAA,
+        3 | 10 => 0xFF0000,
+        4 | 11 => 0x00FF00,
+        5 | 12 => 0x0000FF,
+        6 | 13 => 0xFF00FF,
+        7 | 14 => 0xFFCC00,
+        _ => 0x00FFCC,
     }
 }
 
-fn read_screen_state(cpu: &Cpu, frame: &mut [u8; 32 * 3 * 32]) -> bool {
-    let mut frame_idx = 0;
+fn read_screen_state(cpu: &Cpu, frame: &mut [u32]) -> bool {
     let mut update = false;
     for i in 0x0200..0x600 {
         let color_idx = cpu.memory.read(i as u16);
-        let (b1, b2, b3) = color(color_idx).rgb();
-        if frame[frame_idx] != b1 || frame[frame_idx + 1] != b2 || frame[frame_idx + 2] != b3 {
-            frame[frame_idx] = b1;
-            frame[frame_idx + 1] = b2;
-            frame[frame_idx + 2] = b3;
+        let c = color(color_idx);
+        let init = i - 0x200;
+        if frame[init] != c {
+            frame[init] = c;
             update = true;
         }
-        frame_idx += 3;
     }
     update
 }
