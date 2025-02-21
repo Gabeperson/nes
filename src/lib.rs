@@ -3,7 +3,7 @@ use fetch_decode::{AddrMode, decode};
 use log::warn;
 
 mod fetch_decode;
-mod rom;
+pub mod rom;
 use rom::*;
 
 bitflags::bitflags! {
@@ -32,7 +32,7 @@ pub struct Bus {
 }
 
 impl Bus {
-    fn new(rom: Rom) -> Self {
+    pub fn new(rom: Rom) -> Self {
         Bus {
             cpu_ram: [0; 0x800],
             rom,
@@ -85,9 +85,8 @@ impl Bus {
                 let _masked = pos & 0x2007;
                 todo!("PPU")
             }
-            0xfffc..=0xfffd => {
-                let masked = pos & 0x1;
-                self.pc_start_mem[masked as usize] = val;
+            0x8000..=0xFFFF => {
+                panic!("Attempted to write into PRG rom")
             }
             _ => {
                 warn!("Unknown memory address 0x{pos:04X} accessed, ignoring...");
@@ -108,17 +107,12 @@ impl Bus {
         self.write(pos, low);
         self.write(pos + 1, high);
     }
-    pub fn load_prg_rom(&mut self, slice: &[u8]) {
-        todo!()
-        // self.cpu_ram[0x8000..(0x8000 + slice.len())].copy_from_slice(slice)
-    }
     pub fn load_to(&mut self, pos: u16, slice: &[u8]) {
         let pos = pos as usize;
         self.cpu_ram[pos..(pos + slice.len())].copy_from_slice(slice)
     }
 }
 
-#[derive(Default)]
 pub struct Cpu {
     pub reg_a: u8,
     pub reg_x: u8,
@@ -133,8 +127,16 @@ const STACK_RESET: u8 = 0xfd;
 const STACK_START: u16 = 0x100;
 
 impl Cpu {
-    pub fn new() -> Self {
-        let mut me = Self::default();
+    pub fn new(bus: Bus) -> Self {
+        let mut me = Self {
+            reg_a: 0,
+            reg_x: 0,
+            reg_y: 0,
+            stack_ptr: 0,
+            pc: 0,
+            status: Flags::empty(),
+            memory: bus,
+        };
         me.reset();
         me
     }
@@ -147,17 +149,8 @@ impl Cpu {
         let pc = self.memory.read_u16(0xFFFC);
         self.pc = pc;
     }
-    pub fn load_and_run(&mut self, program: &[u8]) {
-        self.load_to_prg_rom(program);
-        self.reset();
-        self.run();
-    }
     pub fn load_to(&mut self, start: u16, program: &[u8]) {
         self.memory.load_to(start, program);
-        self.memory.write_u16(0xFFFC, 0x8000);
-    }
-    fn load_to_prg_rom(&mut self, program: &[u8]) {
-        self.memory.load_prg_rom(program);
         self.memory.write_u16(0xFFFC, 0x8000);
     }
     pub fn run_with_callback<F: FnMut(&mut Cpu)>(&mut self, mut f: F) {
