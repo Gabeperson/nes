@@ -1,6 +1,10 @@
 use crate::fetch_decode::Opcode;
 use fetch_decode::{AddrMode, decode};
-use log::{trace, warn};
+use log::warn;
+
+mod fetch_decode;
+mod rom;
+use rom::*;
 
 bitflags::bitflags! {
     pub struct Flags: u8 {
@@ -22,21 +26,16 @@ impl Default for Flags {
     }
 }
 
-const CPU_RAM_START: u16 = 0x0000;
-const CPU_RAM_MIRROR_END: u16 = 0x1FFF;
-const PPU_REGISTERS_START: u16 = 0x2000;
-const PPU_REGISTERS_END: u16 = 0x3FFF;
-
 pub struct Bus {
-    cpu_ram: [u8; 0x800],
-    pc_start_mem: [u8; 2],
+    pub cpu_ram: [u8; 0x800],
+    pub rom: Rom,
 }
 
-impl Default for Bus {
-    fn default() -> Self {
+impl Bus {
+    fn new(rom: Rom) -> Self {
         Bus {
             cpu_ram: [0; 0x800],
-            pc_start_mem: [0; 2],
+            rom,
         }
     }
 }
@@ -44,18 +43,30 @@ impl Default for Bus {
 impl Bus {
     pub fn read(&self, pos: u16) -> u8 {
         match pos {
-            CPU_RAM_START..=CPU_RAM_MIRROR_END => {
+            // CPU
+            0x0000..=0x1FFF => {
                 let masked = pos & 0x07ff;
                 self.cpu_ram[masked as usize]
             }
-            PPU_REGISTERS_START..=PPU_REGISTERS_END => {
+            // PPU
+            0x2000..=0x3FFF => {
                 let _masked = pos & 0x2007;
                 todo!("PPU")
             }
-            0xfffc..=0xfffd => {
-                let masked = pos & 0x1;
-                self.pc_start_mem[masked as usize]
+            0x8000..=0xFFFF => {
+                let mut pos = pos - 0x8000;
+                // if self.rom.prg_rom.len() == 0x4000 && pos >= 0x4000 {
+                //     pos %= 0x4000;
+                // }
+                if self.rom.prg_rom.len() == 0x4000 {
+                    pos %= 0x4000;
+                }
+                self.rom.prg_rom[pos as usize]
             }
+            // 0xfffc..=0xfffd => {
+            //     let masked = pos & 0x1;
+            //     self.pc_start_mem[masked as usize]
+            // }
             _ => {
                 warn!("Unknown memory address 0x{pos:04X} accessed, ignoring...");
                 0
@@ -64,11 +75,13 @@ impl Bus {
     }
     pub fn write(&mut self, pos: u16, val: u8) {
         match pos {
-            CPU_RAM_START..=CPU_RAM_MIRROR_END => {
+            // CPU
+            0x0000..=0x1FFF => {
                 let masked = pos & 0x07ff;
                 self.cpu_ram[masked as usize] = val;
             }
-            PPU_REGISTERS_START..=PPU_REGISTERS_END => {
+            // PPU
+            0x2000..=0x3FFF => {
                 let _masked = pos & 0x2007;
                 todo!("PPU")
             }
@@ -118,8 +131,6 @@ pub struct Cpu {
 
 const STACK_RESET: u8 = 0xfd;
 const STACK_START: u16 = 0x100;
-
-mod fetch_decode;
 
 impl Cpu {
     pub fn new() -> Self {
