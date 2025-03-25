@@ -4,7 +4,7 @@ use log::Level;
 use nes::*;
 use rom::Rom;
 use winit::{
-    dpi::{LogicalSize, Size},
+    dpi::{LogicalSize, PhysicalSize, Size},
     event::{Event, KeyEvent, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     keyboard::{Key, KeyCode, NamedKey, PhysicalKey},
@@ -18,7 +18,7 @@ fn main() {
     let app = winit_app::WinitAppBuilder::with_init(
         |elwt| {
             let window = winit_app::make_window(elwt, |w| {
-                w.with_inner_size(Size::Logical(LogicalSize::new(320., 320.)))
+                w.with_inner_size(Size::Physical(PhysicalSize::new(320, 320)))
             });
             let context = softbuffer::Context::new(window.clone()).unwrap();
             let rom = Rom::new(GAME_CODE).unwrap();

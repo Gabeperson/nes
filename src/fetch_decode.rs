@@ -169,9 +169,9 @@ pub fn decode(val: u8) -> (Opcode, AddrMode, InstructionInfo) {
         0x69 => (Opcode::ADC, AddrMode::Immediate, info(2, 2)),
         0x65 => (Opcode::ADC, AddrMode::ZeroPage, info(2, 3)),
         0x75 => (Opcode::ADC, AddrMode::ZeroPageX, info(2, 4)),
-        0x6D => (Opcode::ADC, AddrMode::Absolute, info(2, 4)),
-        0x7D => (Opcode::ADC, AddrMode::AbsoluteX, info_extra(2, 4, 1)),
-        0x79 => (Opcode::ADC, AddrMode::AbsoluteY, info_extra(2, 4, 1)),
+        0x6D => (Opcode::ADC, AddrMode::Absolute, info(3, 4)),
+        0x7D => (Opcode::ADC, AddrMode::AbsoluteX, info_extra(3, 4, 1)),
+        0x79 => (Opcode::ADC, AddrMode::AbsoluteY, info_extra(3, 4, 1)),
         0x61 => (Opcode::ADC, AddrMode::IndexedIndirect, info(2, 6)),
         0x71 => (Opcode::ADC, AddrMode::IndirectIndexed, info_extra(2, 5, 1)),
 
@@ -222,11 +222,11 @@ pub fn decode(val: u8) -> (Opcode, AddrMode, InstructionInfo) {
 
         0xE0 => (Opcode::CPX, AddrMode::Immediate, info(2, 2)),
         0xE4 => (Opcode::CPX, AddrMode::ZeroPage, info(2, 3)),
-        0xEC => (Opcode::CPX, AddrMode::Absolute, info(2, 4)),
+        0xEC => (Opcode::CPX, AddrMode::Absolute, info(3, 4)),
 
         0xC0 => (Opcode::CPY, AddrMode::Immediate, info(2, 2)),
         0xC4 => (Opcode::CPY, AddrMode::ZeroPage, info(2, 3)),
-        0xCC => (Opcode::CPY, AddrMode::Absolute, info(2, 4)),
+        0xCC => (Opcode::CPY, AddrMode::Absolute, info(3, 4)),
 
         0xC6 => (Opcode::DEC, AddrMode::ZeroPage, info(2, 5)),
         0xD6 => (Opcode::DEC, AddrMode::ZeroPageX, info(2, 6)),

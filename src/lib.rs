@@ -6,12 +6,14 @@ mod fetch_decode;
 pub mod rom;
 use rom::*;
 
+pub mod trace;
+
 bitflags::bitflags! {
+    #[derive(Clone)]
     pub struct Flags: u8 {
         const NEGATIVE = 0b_1000_0000;
         const OVERFLOW = 0b_0100_0000;
-        const ALWAYSON = 0b_0010_0000;
-        const UNUSED = 0b_0010_0000;
+        const BREAK2 = 0b_0010_0000;
         const BREAK = 0b_0001_0000;
         const DECIMAL = 0b_0000_1000;
         const INTERRUPTDISABLE = 0b_0000_0100;
@@ -99,6 +101,7 @@ impl Bus {
         // dbg!(low);
         let high = self.read(pos + 1) as u16;
         // dbg!(high);
+        // println!("read u16 from 0x{pos:04x}: {:x}", (high << 8) | low);
         (high << 8) | low
     }
     pub fn write_u16(&mut self, pos: u16, val: u16) {
@@ -121,6 +124,7 @@ pub struct Cpu {
     pub pc: u16,
     pub status: Flags,
     pub memory: Bus,
+    pub brk: bool,
 }
 
 const STACK_RESET: u8 = 0xfd;
@@ -136,12 +140,13 @@ impl Cpu {
             pc: 0,
             status: Flags::empty(),
             memory: bus,
+            brk: false,
         };
         me.reset();
         me
     }
     pub fn reset(&mut self) {
-        self.status = Flags::INTERRUPTDISABLE | Flags::ALWAYSON;
+        self.status = Flags::INTERRUPTDISABLE | Flags::BREAK2;
         self.reg_a = 0;
         self.reg_x = 0;
         self.reg_y = 0;
@@ -154,7 +159,7 @@ impl Cpu {
         self.memory.write_u16(0xFFFC, 0x8000);
     }
     pub fn run_with_callback<F: FnMut(&mut Cpu)>(&mut self, mut f: F) {
-        while !self.status.contains(Flags::BREAK) {
+        while !self.brk {
             f(self);
             self.step();
         }
@@ -172,44 +177,55 @@ impl Cpu {
     /// Get the value at the correct addressing mode
     /// Assumes the `pc` is still set at the instruction beginning
     fn get_addr_mode_dest(&self, addr_mode: AddrMode) -> u16 {
+        self.get_addr_mode_dest_ext(addr_mode, self.pc)
+    }
+    fn get_addr_mode_dest_ext(&self, addr_mode: AddrMode, base: u16) -> u16 {
         match addr_mode {
             AddrMode::Implicit => panic!("Implicit should not need a memory load"),
             AddrMode::Accumulator => panic!("Accumulator should not need a memory load"),
-            AddrMode::Immediate => self.pc + 1,
-            AddrMode::ZeroPage => self.memory.read(self.pc + 1) as u16,
-            AddrMode::ZeroPageX => self.memory.read(self.pc + 1).wrapping_add(self.reg_x) as u16,
-            AddrMode::ZeroPageY => self.memory.read(self.pc + 1).wrapping_add(self.reg_y) as u16,
-            AddrMode::Relative => self.pc + 1,
-            AddrMode::Absolute => self.memory.read_u16(self.pc + 1),
+            AddrMode::Immediate => base + 1,
+            AddrMode::ZeroPage => self.memory.read(base + 1) as u16,
+            AddrMode::ZeroPageX => self.memory.read(base + 1).wrapping_add(self.reg_x) as u16,
+            AddrMode::ZeroPageY => self.memory.read(base + 1).wrapping_add(self.reg_y) as u16,
+            AddrMode::Relative => base + 1,
+            AddrMode::Absolute => self.memory.read_u16(base + 1),
             AddrMode::AbsoluteX => {
                 self.memory
-                    .read_u16(self.pc + 1)
+                    .read_u16(base + 1)
                     .wrapping_add(self.reg_x as u16)
                 // + self.status.contains(Flags::CARRY) as u16
             }
             AddrMode::AbsoluteY => {
                 self.memory
-                    .read_u16(self.pc + 1)
+                    .read_u16(base + 1)
                     .wrapping_add(self.reg_y as u16)
                 // + self.status.contains(Flags::CARRY) as u16
             }
             AddrMode::Indirect => {
-                panic!("Should be implemented outside")
-                // let imm = self.memory.read_u16(self.pc + 1);
+                let indirect_addr = self.memory.read_u16(self.pc + 1);
+                if indirect_addr as u8 == 0xff {
+                    let low = self.memory.read(indirect_addr) as u16;
+                    let high = self.memory.read(indirect_addr & 0xff00) as u16;
+                    (high << 8) | low
+                } else {
+                    self.memory.read_u16(indirect_addr)
+                }
+                // panic!("Should be implemented outside")
+                // let imm = self.memory.read_u16(base + 1);
                 // self.memory.read_u16(imm)
             }
             AddrMode::IndexedIndirect => {
-                let addr = self.memory.read(self.pc + 1).wrapping_add(self.reg_x);
+                let addr = self.memory.read(base + 1).wrapping_add(self.reg_x);
                 let low = self.memory.read(addr as u16);
-                let high = self.memory.read((addr as u16).wrapping_add(1));
+                let high = self.memory.read(addr.wrapping_add(1) as u16);
                 ((high as u16) << 8) | (low as u16)
             }
             AddrMode::IndirectIndexed => {
-                let base_loc = self.memory.read(self.pc + 1);
+                let base_loc = self.memory.read(base + 1);
                 let low = self.memory.read(base_loc as u16);
                 let high = self.memory.read(base_loc.wrapping_add(1) as u16);
                 let base = ((high as u16) << 8) | (low as u16);
-                base + self.reg_y as u16
+                base.wrapping_add(self.reg_y as u16)
             }
         }
     }
@@ -279,6 +295,7 @@ impl Cpu {
             }
             (Opcode::BRK, _addr_mode) => {
                 self.status.insert(Flags::BREAK);
+                self.brk = true;
                 return;
                 // self.push_stack_u16(self.pc);
                 // self.push_stack(self.status.bits());
@@ -332,7 +349,7 @@ impl Cpu {
                 self.update_zero_negative(self.reg_x);
             }
             (Opcode::DEY, _addr_mode) => {
-                self.reg_y = self.reg_x.wrapping_sub(1);
+                self.reg_y = self.reg_y.wrapping_sub(1);
                 self.update_zero_negative(self.reg_y);
             }
             (Opcode::EOR, addr_mode) => {
@@ -362,15 +379,16 @@ impl Cpu {
                     return;
                 }
                 AddrMode::Indirect => {
-                    let indirect_addr = self.memory.read_u16(self.pc + 1);
-                    let new_pc = if indirect_addr as u8 == 0xff {
-                        let low = self.memory.read(indirect_addr) as u16;
-                        let high = self.memory.read(indirect_addr & 0xff00) as u16;
-                        (high << 8) | low
-                    } else {
-                        self.memory.read_u16(indirect_addr)
-                    };
-                    self.pc = new_pc;
+                    // let indirect_addr = self.memory.read_u16(self.pc + 1);
+                    // let new_pc = if indirect_addr as u8 == 0xff {
+                    //     let low = self.memory.read(indirect_addr) as u16;
+                    //     let high = self.memory.read(indirect_addr & 0xff00) as u16;
+                    //     (high << 8) | low
+                    // } else {
+                    //     self.memory.read_u16(indirect_addr)
+                    // };
+                    let addr = self.get_addr_mode_dest(AddrMode::Indirect);
+                    self.pc = addr;
                     return;
                 }
                 _ => unreachable!(),
@@ -430,7 +448,10 @@ impl Cpu {
                 self.push_stack(self.reg_a);
             }
             (Opcode::PHP, _addr_mode) => {
-                self.push_stack(self.status.bits());
+                let mut status = self.status.clone();
+                status.insert(Flags::BREAK);
+                status.insert(Flags::BREAK2);
+                self.push_stack(status.bits());
             }
             (Opcode::PLA, _addr_mode) => {
                 self.reg_a = self.pop_stack();
@@ -438,6 +459,8 @@ impl Cpu {
             }
             (Opcode::PLP, _addr_mode) => {
                 self.status = Flags::from_bits_retain(self.pop_stack());
+                self.status.remove(Flags::BREAK);
+                self.status.insert(Flags::BREAK2);
             }
             (Opcode::ROL, addr_mode) => {
                 if let AddrMode::Accumulator = addr_mode {
@@ -477,7 +500,9 @@ impl Cpu {
             }
             (Opcode::RTI, _addr_mode) => {
                 self.status = Flags::from_bits_retain(self.pop_stack());
-                self.pc = self.pop_stack_u16();
+                self.status.remove(Flags::BREAK);
+                self.status.insert(Flags::BREAK2);
+                self.pc = self.pop_stack_u16() - 1;
             }
             (Opcode::RTS, _addr_mode) => {
                 self.pc = self.pop_stack_u16();
@@ -520,7 +545,7 @@ impl Cpu {
             }
             (Opcode::TXS, _addr_mode) => {
                 self.stack_ptr = self.reg_x;
-                self.update_zero_negative(self.stack_ptr);
+                // self.update_zero_negative(self.stack_ptr);
             }
             (Opcode::TYA, _addr_mode) => {
                 self.reg_a = self.reg_y;
